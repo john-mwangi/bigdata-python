@@ -1,27 +1,12 @@
 # %% [markdown]
 # # Objectives
-# * Reading data into Spark
-# * Using data.table, vaex and lazy queries
-# * Running background jobs in Jupyter
-# * Run queries on Google Collab from local database
-# * Run H2O.ai to create ML model
-# * Save results to parquet file
-# * Use dbt and Airflow to orchestrate everything
-# * Using GitHub Actions with dbt
-# * Convert to script with classes
-# * Create front end using Django
-# * Test the following tools:
-#   * DVC for data versioning
-#   * ML flow for model versioning
-#   * ML flow vs Air flow
-#   * Model monitoring
+# Using Spark and OOM tools for handling data.
 
 # %% [markdown]
 # # Packages
 
 # %%
 import pandas as pd
-from datetime import datetime, date
 import sys
 
 # %%
@@ -31,9 +16,14 @@ sys.path.insert(
     "C:\\Users\\User\\AppData\\Local\\spark\\spark-3.1.1-bin-hadoop3.2\\python",
 )
 
-from pyspark.sql import SparkSession
 from pyspark import __version__ as py_ver
 from py4j import __version__ as py4_ver
+
+from pyspark.sql import SparkSession
+from pyspark.sql.types import StructType, StructField, StringType, IntegerType
+from pyspark.sql.functions import isnull, isnan, count, when
+from pyspark.sql.functions import countDistinct
+from pyspark.sql.functions import mean, max, stddev
 
 # %% [markdown]
 # # Pyspark
@@ -53,51 +43,34 @@ py4_ver
 # Python executable path
 sys.executable
 
+# %% [markdown]
+# ## Init & Config
+
 # %%
 sc = SparkSession.builder.getOrCreate()
 sc
 
+# %%
+sc.sparkContext._conf.getAll()
+
 # %% [markdown]
 # ## Importing data
-# ### From Pandas
-
-# %%
-pandas_df = pd.DataFrame(
-    {
-        "a": [1, 2, 3],
-        "b": [2.0, 3.0, 4.0],
-        "c": ["string1", "string2", "string3"],
-        "d": [date(2000, 1, 1), date(2000, 2, 1), date(2000, 3, 1)],
-        "e": [
-            datetime(2000, 1, 1, 12, 0),
-            datetime(2000, 1, 2, 12, 0),
-            datetime(2000, 1, 3, 12, 0),
-        ],
-    }
-)
-
-sp_df = sc.createDataFrame(pandas_df)
-sp_df
-
-# %%
-sp_df.printSchema()
-sp_df.show()
-
-# %% [markdown]
 # ### From CSV
 
 # %%
-sp_csv = sc.read.csv("../inputs/task2_data1.csv")
+sp_csv = sc.read.csv("../inputs/uap_om/task2_data1.csv", header=True)
 sp_csv
+
+# %%
+sp_csv.printSchema()
 
 # %%
 sp_csv.show()
 
 # %% [markdown]
 # ### From SQL
-
-# %% [markdown]
-# Update conf/spark-defaults.conf to include the setting: `spark.driver.extraClassPath` = `E:\\Softwares\\postgresql-42.2.22.jar`. This can't be set through sparkConf(), the code chunk below will fail.
+#
+# Update `conf\spark-defaults.conf` to include the setting: `spark.driver.extraClassPath` = `E:\\Softwares\\postgresql-42.2.22.jar`. This can't be set through sparkConf() at runtime, the code chunk below will fail.
 #
 # Reference:
 # * https://spark.apache.org/docs/latest/configuration.html
@@ -105,31 +78,169 @@ sp_csv.show()
 # * https://stackoverflow.com/questions/30983982/how-to-use-jdbc-source-to-write-and-read-data-in-pyspark
 
 # %%
-# sc.sparkContext.stop()
-# confs = [("spark.driver.extraClassPath", "E:\\Softwares\\postgresql-42.2.22.jar")]
-# conf = sc.sparkContext._conf.setAll(confs)
-# sc.sparkContext.stop()
-# sc = SparkSession.builder.config(conf=conf).getOrCreate()
-# sc.sparkContext._conf.getAll()
-
-# %%
-sc.sparkContext._conf.getAll()
-
-# %%
-sp_pg = sc.read.jdbc(
+sp_sql = sc.read.jdbc(
     url="jdbc:postgresql://localhost:5432/chinook",
     table="album",
     properties={"user": "postgres", "password": "john"},
 )
 
-sp_pg
+sp_sql
 
 # %%
-sp_pg.show()
+sp_sql.show()
+
+# %% [markdown]
+# ### From Pandas
+# When reading from a pandas dataframe, you need to manually create a schema in the event that Spark is not able to infer the correct data types. If you have numerous columns, this can become tedious. Below is a shorter way of creating a schema that maps all columns from pandas as string columns in Spark.
+#
+# Essentially, you need to create a schema from df.head that you can edit manually if need be.
+
+# %%
+pandas_df = pd.read_csv("../inputs/uap_om/task2_data1.csv")
+pandas_df.dtypes
+
+# %%
+pd_schema = sc.createDataFrame(pandas_df.head()).schema
+pd_schema
+
+# %%
+sp_pd = sc.createDataFrame(data=pandas_df, schema=pd_schema)
+sp_pd
+
+# %%
+sp_pd.show()
+
+# %% [markdown]
+# ## Data wrangling
+# Common data wrangling tasks... In general there is a lot of similarity with pandas.
+
+# %%
+traindemographics = sc.read.csv(
+    "../inputs/lending/traindemographics.csv", header=True
+)
+trainperf = sc.read.csv("../inputs/lending/trainperf.csv", header=True)
+
+# %%
+# Unique records
+traindemographics = traindemographics.dropDuplicates(subset=["customerid"])
+trainperf = trainperf.dropDuplicates(subset=["customerid"])
+
+# %%
+# Merging tables
+lending_merged = traindemographics.join(trainperf, on="customerid", how="left")
+lending_merged.columns[:10]
+
+# %%
+# Info about your columns
+lending_merged.printSchema()
+lending_merged.dtypes
+lending_merged.columns
+
+# %%
+# Summary stats
+summary_stats = lending_merged.describe()
+
+# %%
+# There is no inbuilt transpose method
+summ_cols = summary_stats.toPandas().transpose().iloc[0, :].tolist()
+summ_df = summary_stats.toPandas().transpose().iloc[1:, :]
+summ_df.columns = summ_cols
+summ_df
+
+# %%
+# Selecting columns
+lending_merged.select("customerid", "birthdate", "bank_account_type").show(5)
+
+# %%
+# Filtering
+lending_merged.filter(
+    (lending_merged.bank_account_type == "Savings")
+    | (lending_merged.good_bad_flag == "Good")
+).select(["customerid", "bank_account_type", "good_bad_flag"]).show()
+
+# %%
+# Counting nulls
+lending_merged.filter(lending_merged.good_bad_flag.isNull()).count()
+
+# %%
+# SQL version: when() is necessary
+lending_merged.select(
+    [
+        count(when(condition=isnull("good_bad_flag"), value="null")).alias(
+            "null_count"
+        )
+    ]
+).show()
+
+# %%
+# Using a dict
+counts = {
+    col: lending_merged.filter(lending_merged[col].isNull()).count()
+    for col in lending_merged.columns[:3] + ["good_bad_flag"]
+}
+counts
+
+# %%
+# Using SQL/select
+lending_merged.select(
+    [
+        count(when(condition=isnan(col) | isnull(col), value=col)).alias(col)
+        for col in lending_merged.columns[:3] + ["good_bad_flag"]
+    ]
+).show()
+
+# %%
+# Counts by group
+lending_merged.groupBy(["bank_account_type", "good_bad_flag"]).agg(
+    countDistinct("good_bad_flag").alias("counts")
+).show()
+
+# %%
+# Grouped average, max
+lending_merged.groupBy(["bank_account_type", "good_bad_flag"]).agg(
+    mean("loanamount").alias("avg_loanamount")
+).show()
+
+# %%
+# Simple average
+lending_merged.select(mean("loanamount").alias("avg_loan")).show()
+
+# %% [markdown]
+# ## Retrieving results
+# After you're satisfied with your Spark results, you can convert then into a pandas dataframe. Spark runs lazy queries and `collect` executes them and retrieves them from remote to memory as a list.
+
+# %%
+sp_res = lending_merged.groupBy(["bank_account_type", "good_bad_flag"]).agg(
+    mean("loanamount").alias("avg_loanamount")
+)
+
+sp_res
+
+# %%
+pd.DataFrame(sp_res.collect(), columns=sp_res.columns)
+
+# %% [markdown]
+# ## MLLib
+# Machine learning using Spark.
+
+# %%
+# Sampling
+lending_merged.select(["customerid"]).sample(
+    withReplacement=False, fraction=0.1
+).show()
+
+# %%
+# Stratified sampling
+lending_merged.select(["customerid", "good_bad_flag"]).sampleBy(
+    col="good_bad_flag", fractions={"Good": 0.1, "Bad": 0.3}
+).groupBy("good_bad_flag").agg(count("good_bad_flag").alias("count")).show()
 
 # %% [markdown]
 # ## Exporting data
-# ### To Pandas
+# ### To CSV
+# ### To SQL
+# ### To pandas
 
-# %%
-sp_pg.toPandas()
+# %% [markdown]
+# # OOM dataframes
+# Dask, sframe, vaex, data.table
