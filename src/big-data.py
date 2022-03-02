@@ -12,10 +12,7 @@ import sys
 
 # %%
 # Importing module from a different location
-sys.path.insert(
-    0,
-    "C:\\Users\\User\\AppData\\Local\\spark\\spark-3.1.1-bin-hadoop3.2\\python",
-)
+# sys.path.insert(0, "C:\\Users\\User\\AppData\\Local\\spark\\spark-3.1.1-bin-hadoop3.2\\python")
 
 from pyspark import __version__ as py_ver
 from py4j import __version__ as py4_ver
@@ -231,10 +228,17 @@ sp_res
 pd.DataFrame(sp_res.collect(), columns=sp_res.columns)
 
 # %% [markdown]
-# ## MLLib
-# Machine learning using Spark.
+# ## Machine Learning
+# Machine Learning using Spark. MLLib was superseded by ML.
 #
-# Reference: https://spark.apache.org/docs/latest/ml-guide.html
+# References:
+# * https://spark.apache.org/docs/latest/ml-guide.html
+# * https://stackoverflow.com/questions/32277576/how-to-handle-categorical-features-with-spark-ml
+# * https://towardsdatascience.com/a-guide-to-exploit-random-forest-classifier-in-pyspark-46d6999cb5db
+# * https://spark.apache.org/docs/latest/ml-classification-regression.html#random-forest-classifier
+
+# %% [markdown]
+# ### Sampling
 
 # %%
 # Sampling
@@ -248,8 +252,8 @@ lending_merged.select(["customerid", "good_bad_flag"]).sampleBy(
     col="good_bad_flag", fractions={"Good": 0.1, "Bad": 0.3}
 ).groupBy("good_bad_flag").agg(count("good_bad_flag").alias("count")).show()
 
-# %%
-# Random Forest Classifier
+# %% [markdown]
+# ### Complete columns
 
 # %%
 nulls_res = lending_merged.select(
@@ -276,28 +280,26 @@ rf_data_raw = lending_merged.select(complete_cols + ["good_bad_flag"]).filter(
     condition=lending_merged.good_bad_flag.isNotNull()
 )
 
-# %% [markdown]
-# References:
-# * https://stackoverflow.com/questions/32277576/how-to-handle-categorical-features-with-spark-ml
-# * https://towardsdatascience.com/a-guide-to-exploit-random-forest-classifier-in-pyspark-46d6999cb5db
-# * https://spark.apache.org/docs/latest/ml-classification-regression.html#random-forest-classifier
-
 # %%
 # Original data with only complete columns
 rf_data_raw.show(5)
+
+# %% [markdown]
+# ### Label indexing
 
 # %%
 # Set label columns
 label_indexer = StringIndexer(inputCol="good_bad_flag", outputCol="label").fit(
     rf_data_raw
 )
-
-# %%
 rf_data_label_trans = label_indexer.transform(rf_data_raw)
 
 # %%
 # This adds an indexed label to the dataframe
 rf_data_label_trans.show(5)
+
+# %% [markdown]
+# ### Feature indexing
 
 # %%
 # Prepare column names for the columns that will be indexed
@@ -305,14 +307,16 @@ complete_idx = [f"{col}_idx" for col in complete_cols]
 
 # %%
 # Transform adds the indexed features to the dataframe
-rf_data_feat_trans = (
-    StringIndexer(inputCols=complete_cols, outputCols=complete_idx)
-    .fit(rf_data_label_trans)
-    .transform(rf_data_label_trans)
-)
+feat_indexer = StringIndexer(
+    inputCols=complete_cols, outputCols=complete_idx
+).fit(rf_data_label_trans)
+rf_data_feat_trans = feat_indexer.transform(rf_data_label_trans)
 
 # %%
 rf_data_feat_trans.show(5)
+
+# %% [markdown]
+# ### OneHot Encoding
 
 # %%
 # Prepare column names for columns that will be dummified
@@ -320,20 +324,23 @@ complete_dums = [f"{col}_dum" for col in complete_cols]
 
 # %%
 # Perform OHE
-rf_data_dum_trans = (
-    OneHotEncoder(inputCols=complete_idx, outputCols=complete_dums)
-    .fit(rf_data_feat_trans)
-    .transform(rf_data_feat_trans)
-)
+oh_encoder = OneHotEncoder(
+    inputCols=complete_idx, outputCols=complete_dums
+).fit(rf_data_feat_trans)
+rf_data_dum_trans = oh_encoder.transform(rf_data_feat_trans)
 
 # %%
 rf_data_dum_trans.select(complete_dums + ["label"]).show(5)
 
+# %% [markdown]
+# ### Vector Assembly
+
 # %%
 # Perform combine columns into a single index
-rf_data_feats_trans = VectorAssembler(
+vector_assembler = VectorAssembler(
     inputCols=complete_dums, outputCol="features"
-).transform(rf_data_dum_trans)
+)
+rf_data_feats_trans = vector_assembler.transform(rf_data_dum_trans)
 
 # %%
 rf_data_feats_trans.select("features", "label").show(5)
@@ -342,24 +349,32 @@ rf_data_feats_trans.select("features", "label").show(5)
 # This is now the dataframe that'll be used for training
 rf_data_full = rf_data_feats_trans.select("features", "label")
 
+# %% [markdown]
+# ### Train-test Split
+
 # %%
 train_data, test_data = rf_data_full.randomSplit(weights=[0.7, 0.3], seed=123)
 
-# %%
-# Random forest model
-rf_model = RandomForestClassifier(
-    featuresCol="features", labelCol="label", numTrees=5
-).fit(train_data)
+# %% [markdown]
+# ### Model Training
 
 # %%
+# Random forest model
+rf = RandomForestClassifier(
+    featuresCol="features", labelCol="label", numTrees=5
+)
+rf_model = rf.fit(train_data)
 rf_model
+
+# %% [markdown]
+# ### Prediction
 
 # %%
 pred_res = rf_model.transform(train_data)
 pred_res.show()
 
 # %%
-# Convert to original features
+# Convert predictions to original labels
 label_converter = IndexToString(
     inputCol="prediction", outputCol="pred_label", labels=label_indexer.labels
 )
