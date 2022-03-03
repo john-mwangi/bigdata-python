@@ -1,6 +1,6 @@
 # %% [markdown]
 # # Objectives
-# Using Spark and OOM tools for handling data.
+# Big data processing and Machine Learning using Apache Spark.
 
 # %% [markdown]
 # # Packages
@@ -12,7 +12,10 @@ import sys
 
 # %%
 # Importing module from a different location
-# sys.path.insert(0, "C:\\Users\\User\\AppData\\Local\\spark\\spark-3.1.1-bin-hadoop3.2\\python")
+sys.path.insert(
+    0,
+    "C:\\Users\\User\\AppData\\Local\\spark\\spark-3.1.1-bin-hadoop3.2\\python",
+)
 
 from pyspark import __version__ as py_ver
 from py4j import __version__ as py4_ver
@@ -384,11 +387,16 @@ label_converter.transform(pred_res).show()
 
 # %% [markdown]
 # ## Exporting data
-# ### To CSV
 # ### To SQL
-# ### To pandas
-# ### To parquet
+
+# %%
+sp_csv.write.jdbc(
+    url="jdbc:postgresql://localhost:5432/chinook",
+    table="spark_csv",
+    mode="overwrite",
+    properties={"user": "postgres", "password": "john"},
+)
 
 # %% [markdown]
-# # OOM dataframes
-# Dask, sframe, vaex, data.table
+# ### To parquet, csv
+# Spark only supports writing to HDFS file systems. Writing locally requires converting reading to memory first: `df.toPandas()` then `pd.to_parquet()`.
